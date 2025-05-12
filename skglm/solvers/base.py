@@ -116,7 +116,12 @@ class BaseSolver(ABC):
                 "This will raise an error starting skglm v0.6 onwards."
             )
         elif datafit is not None:
-            datafit = compiled_clone(datafit, to_float32=X.dtype == np.float32)
+            # Create a clone of the datafit to ensure all methods are preserved
+            datafit_clone = datafit.__class__()
+            for name, value in vars(datafit).items():
+                if not name.startswith('_'):
+                    setattr(datafit_clone, name, value)
+            datafit = compiled_clone(datafit_clone, to_float32=X.dtype == np.float32)
 
         if "jitclass" in str(type(penalty)):
             warnings.warn(
@@ -125,7 +130,12 @@ class BaseSolver(ABC):
                 "This will raise an error starting skglm v0.6 onwards."
             )
         elif penalty is not None:
-            penalty = compiled_clone(penalty)
+            # Create a clone of the penalty to ensure all methods are preserved
+            penalty_clone = penalty.__class__()
+            for name, value in vars(penalty).items():
+                if not name.startswith('_'):
+                    setattr(penalty_clone, name, value)
+            penalty = compiled_clone(penalty_clone)
             # TODO add support for bool spec in compiled_clone
             # currently, doing so break the code
             # penalty = compiled_clone(penalty, to_float32=X.dtype == np.float32)

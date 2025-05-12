@@ -60,7 +60,10 @@ class GroupBCD(BaseSolver):
         n_samples, n_features = X.shape
         n_groups = len(penalty.grp_ptr) - 1
 
-        w = np.zeros(n_features + self.fit_intercept) if w_init is None else w_init
+        if w_init is None:
+            w = np.zeros(n_features + self.fit_intercept, dtype=X.dtype)
+        else:
+            w = np.ascontiguousarray(w_init, dtype=X.dtype)
         Xw = np.zeros(n_samples) if w_init is None else Xw_init
 
         if len(w) != n_features + self.fit_intercept:

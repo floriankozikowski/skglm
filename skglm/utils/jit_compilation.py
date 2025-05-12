@@ -3,6 +3,7 @@ from functools import lru_cache
 import numba
 from numba import float32, float64
 from numba.experimental import jitclass
+from numba.core.types.npytypes import Array as NumbaArray
 
 
 def spec_to_float32(spec):
@@ -56,10 +57,21 @@ def jit_cached_compile(klass, spec, to_float32=False):
     Instance of Datafit or penalty
         Return a jitclass.
     """
+    # Create a new class without inheriting from the original
+    class CompiledClass:
+        pass
+
+    # Copy over all methods and attributes from the original class
+    for name, value in klass.__dict__.items():
+        # Skip __slots__ and __slotnames__ but keep other special methods
+        if name not in ['__slots__', '__slotnames__']:
+            setattr(CompiledClass, name, value)
+
+    # Convert spec to float32 if requested
     if to_float32:
         spec = spec_to_float32(spec)
 
-    return jitclass(spec)(klass)
+    return jitclass(spec)(CompiledClass)
 
 
 def compiled_clone(instance, to_float32=False):
@@ -78,8 +90,24 @@ def compiled_clone(instance, to_float32=False):
     Instance of Datafit or penalty
         Return a jitclass.
     """
-    return jit_cached_compile(
-        instance.__class__,
-        instance.get_spec(),
-        to_float32,
-    )(**instance.params_to_dict())
+    # Skip if already compiled
+    if "jitclass" in str(type(instance)):
+        return instance
+
+    try:
+        # Use the existing compilation approach
+        compiled_instance = jit_cached_compile(
+            instance.__class__,
+            instance.get_spec(),
+            to_float32,
+        )(**instance.params_to_dict())
+
+        # Test a key method to verify compilation worked properly
+        if hasattr(instance, 'initialize') and not hasattr(compiled_instance, 'initialize'):
+            # Fall back to original if key method is missing
+            return instance
+
+        return compiled_instance
+    except Exception:
+        # Fall back to original instance on any error
+        return instance

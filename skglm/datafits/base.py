@@ -1,6 +1,9 @@
-
 class BaseDatafit:
     """Base class for datafits."""
+
+    def __init__(self):
+        """Initialize the datafit."""
+        pass
 
     def get_spec(self):
         """Specify the numba types of the class attributes.
@@ -10,6 +13,7 @@ class BaseDatafit:
         spec: Tuple of (attribute_name, dtype)
             spec to be passed to Numba jitclass to compile the class.
         """
+        return ()
 
     def params_to_dict(self):
         """Get the parameters to initialize an instance of the class.
@@ -19,6 +23,7 @@ class BaseDatafit:
         dict_of_params : dict
             The parameters to instantiate an object of the class.
         """
+        return dict()
 
     def initialize(self, X, y):
         """Pre-computations before fitting on X and y.
@@ -31,6 +36,7 @@ class BaseDatafit:
         y : array, shape (n_samples,)
             Target vector.
         """
+        pass
 
     def initialize_sparse(self, X_data, X_indptr, X_indices, y):
         """Pre-computations before fitting on X and y when X is a sparse matrix.
@@ -49,6 +55,7 @@ class BaseDatafit:
         y : array, shape (n_samples,)
             Target vector.
         """
+        pass
 
     def value(self, y, w, Xw):
         """Value of datafit at vector w.
@@ -69,6 +76,7 @@ class BaseDatafit:
         value : float
             The datafit value at vector w.
         """
+        raise NotImplementedError
 
 
 class BaseMultitaskDatafit:

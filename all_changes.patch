@@ -1,0 +1,733 @@
+diff --git a/skglm/datafits/base.py b/skglm/datafits/base.py
+index 2f70d95..2273380 100644
+--- a/skglm/datafits/base.py
++++ b/skglm/datafits/base.py
+@@ -1,7 +1,10 @@
+-
+ class BaseDatafit:
+     """Base class for datafits."""
+ 
++    def __init__(self):
++        """Initialize the datafit."""
++        pass
++
+     def get_spec(self):
+         """Specify the numba types of the class attributes.
+ 
+@@ -10,6 +13,7 @@ class BaseDatafit:
+         spec: Tuple of (attribute_name, dtype)
+             spec to be passed to Numba jitclass to compile the class.
+         """
++        return ()
+ 
+     def params_to_dict(self):
+         """Get the parameters to initialize an instance of the class.
+@@ -19,6 +23,7 @@ class BaseDatafit:
+         dict_of_params : dict
+             The parameters to instantiate an object of the class.
+         """
++        return dict()
+ 
+     def initialize(self, X, y):
+         """Pre-computations before fitting on X and y.
+@@ -31,6 +36,7 @@ class BaseDatafit:
+         y : array, shape (n_samples,)
+             Target vector.
+         """
++        pass
+ 
+     def initialize_sparse(self, X_data, X_indptr, X_indices, y):
+         """Pre-computations before fitting on X and y when X is a sparse matrix.
+@@ -49,6 +55,7 @@ class BaseDatafit:
+         y : array, shape (n_samples,)
+             Target vector.
+         """
++        pass
+ 
+     def value(self, y, w, Xw):
+         """Value of datafit at vector w.
+@@ -69,6 +76,7 @@ class BaseDatafit:
+         value : float
+             The datafit value at vector w.
+         """
++        raise NotImplementedError
+ 
+ 
+ class BaseMultitaskDatafit:
+diff --git a/skglm/datafits/group.py b/skglm/datafits/group.py
+index 487df4a..fba5446 100644
+--- a/skglm/datafits/group.py
++++ b/skglm/datafits/group.py
+@@ -3,7 +3,7 @@ from numpy.linalg import norm
+ from numba import int32, float64
+ 
+ from skglm.datafits.base import BaseDatafit
+-from skglm.datafits.single_task import Logistic
++from skglm.datafits.single_task import Logistic, sigmoid
+ from skglm.utils.sparse_ops import spectral_norm, sparse_columns_slice
+ 
+ 
+@@ -39,6 +39,16 @@ class QuadraticGroup(BaseDatafit):
+         return dict(grp_ptr=self.grp_ptr,
+                     grp_indices=self.grp_indices)
+ 
++    def initialize(self, X, y):
++        """Initialize the datafit attributes."""
++        # For quadratic group datafit, we don't need to pre-compute anything
++        pass
++
++    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
++        """Initialize the datafit attributes in sparse dataset case."""
++        # For quadratic group datafit, we don't need to pre-compute anything
++        pass
++
+     def get_lipschitz(self, X, y):
+         grp_ptr, grp_indices = self.grp_ptr, self.grp_indices
+         n_groups = len(grp_ptr) - 1
+@@ -151,6 +161,10 @@ class LogisticGroup(Logistic):
+ 
+         self.lipschitz = lipschitz
+ 
++    def raw_grad(self, y, Xw):
++        """Compute gradient of datafit w.r.t ``Xw``."""
++        return -y * sigmoid(-y * Xw) / len(y)
++
+     def gradient_g(self, X, y, w, Xw, g):
+         grp_ptr, grp_indices = self.grp_ptr, self.grp_indices
+         grp_g_indices = grp_indices[grp_ptr[g]: grp_ptr[g+1]]
+diff --git a/skglm/datafits/single_task.py b/skglm/datafits/single_task.py
+index a0bd287..858707b 100644
+--- a/skglm/datafits/single_task.py
++++ b/skglm/datafits/single_task.py
+@@ -27,7 +27,7 @@ class Quadratic(BaseDatafit):
+     """
+ 
+     def __init__(self):
+-        pass
++        self.Xty = np.zeros(0, dtype=np.float64)
+ 
+     def get_spec(self):
+         spec = (
+@@ -141,9 +141,12 @@ class WeightedQuadratic(BaseDatafit):
+     This allows for faster computations.
+     """
+ 
+-    def __init__(self, sample_weights):
++    def __init__(self, sample_weights=None):
+         self.sample_weights = sample_weights
+ 
++    def set_sample_weight(self, sample_weight):
++        self.sample_weights = sample_weight
++
+     def get_spec(self):
+         spec = (
+             ('Xtwy', float64[:]),
+@@ -155,6 +158,8 @@ class WeightedQuadratic(BaseDatafit):
+         return {'sample_weights': self.sample_weights}
+ 
+     def get_lipschitz(self, X, y):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling get_lipschitz.")
+         n_features = X.shape[1]
+         lipschitz = np.zeros(n_features, dtype=X.dtype)
+         w_sum = self.sample_weights.sum()
+@@ -165,6 +170,9 @@ class WeightedQuadratic(BaseDatafit):
+         return lipschitz
+ 
+     def get_lipschitz_sparse(self, X_data, X_indptr, X_indices, y):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling get_lipschitz_sparse.")
+         n_features = len(X_indptr) - 1
+         lipschitz = np.zeros(n_features, dtype=X_data.dtype)
+         w_sum = self.sample_weights.sum()
+@@ -179,9 +187,14 @@ class WeightedQuadratic(BaseDatafit):
+         return lipschitz
+ 
+     def initialize(self, X, y):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling initialize.")
+         self.Xtwy = X.T @ (self.sample_weights * y)
+ 
+     def initialize_sparse(self, X_data, X_indptr, X_indices, y):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling initialize_sparse.")
+         n_features = len(X_indptr) - 1
+         self.Xty = np.zeros(n_features, dtype=X_data.dtype)
+ 
+@@ -193,37 +206,60 @@ class WeightedQuadratic(BaseDatafit):
+             self.Xty[j] = xty
+ 
+     def get_global_lipschitz(self, X, y):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling get_global_lipschitz.")
+         w_sum = self.sample_weights.sum()
+         return norm(X.T @ np.sqrt(self.sample_weights), ord=2) ** 2 / w_sum
+ 
+     def get_global_lipschitz_sparse(self, X_data, X_indptr, X_indices, y):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling get_global_lipschitz_sparse.")
+         return spectral_norm(
+             X_data * np.sqrt(self.sample_weights[X_indices]),
+             X_indptr, X_indices, len(y)) ** 2 / self.sample_weights.sum()
+ 
+     def value(self, y, w, Xw):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling value.")
+         w_sum = self.sample_weights.sum()
+         return np.sum(self.sample_weights * (y - Xw) ** 2) / (2 * w_sum)
+ 
+     def gradient_scalar(self, X, y, w, Xw, j):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling gradient_scalar.")
+         return (X[:, j] @ (self.sample_weights * (Xw - y))) / self.sample_weights.sum()
+ 
+     def gradient_scalar_sparse(self, X_data, X_indptr, X_indices, y, Xw, j):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling gradient_scalar_sparse.")
+         XjTXw = 0.
+         for i in range(X_indptr[j], X_indptr[j + 1]):
+             XjTXw += X_data[i] * self.sample_weights[X_indices[i]] * Xw[X_indices[i]]
+         return (XjTXw - self.Xty[j]) / self.sample_weights.sum()
+ 
+     def gradient(self, X, y, Xw):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling gradient.")
+         return X.T @ (self.sample_weights * (Xw - y)) / self.sample_weights.sum()
+ 
+     def raw_grad(self, y, Xw):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling raw_grad.")
+         return (self.sample_weights * (Xw - y)) / self.sample_weights.sum()
+ 
+     def raw_hessian(self, y, Xw):
++        if self.sample_weights is None:
++            raise ValueError("sample_weights must be set before calling raw_hessian.")
+         return self.sample_weights / self.sample_weights.sum()
+ 
+     def full_grad_sparse(self, X_data, X_indptr, X_indices, y, Xw):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling full_grad_sparse.")
+         n_features = X_indptr.shape[0] - 1
+         grad = np.zeros(n_features, dtype=Xw.dtype)
+ 
+@@ -236,6 +272,9 @@ class WeightedQuadratic(BaseDatafit):
+         return grad
+ 
+     def intercept_update_step(self, y, Xw):
++        if self.sample_weights is None:
++            raise ValueError(
++                "sample_weights must be set before calling intercept_update_step.")
+         return np.sum(self.sample_weights * (Xw - y)) / self.sample_weights.sum()
+ 
+ 
+@@ -298,19 +337,20 @@ class Logistic(BaseDatafit):
+         pass
+ 
+     def get_spec(self):
+-        pass
++        return ()
+ 
+     def params_to_dict(self):
+         return dict()
+ 
+-    def raw_grad(self, y, Xw):
+-        """Compute gradient of datafit w.r.t ``Xw``."""
+-        return -y / (1 + np.exp(y * Xw)) / len(y)
++    def initialize(self, X, y):
++        """Initialize the datafit attributes."""
++        # For logistic regression, we don't need to pre-compute anything
++        pass
+ 
+-    def raw_hessian(self, y, Xw):
+-        """Compute Hessian of datafit w.r.t ``Xw``."""
+-        exp_minus_yXw = np.exp(-y * Xw)
+-        return exp_minus_yXw / (1 + exp_minus_yXw) ** 2 / len(y)
++    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
++        """Initialize the datafit attributes in sparse dataset case."""
++        # For logistic regression, we don't need to pre-compute anything
++        pass
+ 
+     def get_lipschitz(self, X, y):
+         return (X ** 2).sum(axis=0) / (4 * len(y))
+@@ -486,6 +526,16 @@ class Huber(BaseDatafit):
+     def params_to_dict(self):
+         return dict(delta=self.delta)
+ 
++    def initialize(self, X, y):
++        """Initialize the datafit attributes."""
++        # For Huber datafit, we don't need to pre-compute anything
++        pass
++
++    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
++        """Initialize the datafit attributes in sparse dataset case."""
++        # For Huber datafit, we don't need to pre-compute anything
++        pass
++
+     def get_lipschitz(self, X, y):
+         n_features = X.shape[1]
+ 
+diff --git a/skglm/estimators.py b/skglm/estimators.py
+index 8e327d8..a21796b 100644
+--- a/skglm/estimators.py
++++ b/skglm/estimators.py
+@@ -71,7 +71,6 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
+         raise ValueError("X and y have inconsistent dimensions (%d != %d)"
+                          % (n_samples, y.shape[0]))
+ 
+-    # if not model.warm_start or not hasattr(model, "coef_"):
+     if not solver.warm_start or not hasattr(model, "coef_"):
+         model.coef_ = None
+ 
+@@ -102,7 +101,6 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
+ 
+     n_samples, n_features = X_.shape
+ 
+-    # if model.warm_start and hasattr(model, 'coef_') and model.coef_ is not None:
+     if solver.warm_start and hasattr(model, 'coef_') and model.coef_ is not None:
+         if isinstance(datafit, QuadraticSVC):
+             w = model.dual_coef_[0, :].copy()
+@@ -130,7 +128,17 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
+                 "expected %i, got %i." % (X_.shape[1], len(penalty.weights)))
+ 
+     coefs, p_obj, kkt = solver.solve(X_, y, datafit, penalty, w, Xw)
+-    model.coef_, model.stop_crit_ = coefs[:n_features], kkt
++
++    # Handle coefficients based on datafit type
++    if isinstance(datafit, QuadraticGroup):
++        # For group datafit, ensure coefficients are properly shaped
++        model.coef_ = coefs[:n_features].reshape(1, -1)
++
++    else:
++        model.coef_ = coefs[:n_features]
++
++    model.stop_crit_ = kkt
++
+     if y.ndim == 1:
+         model.intercept_ = coefs[-1] if fit_intercept else 0.
+     else:
+@@ -140,14 +148,15 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
+     model.n_iter_ = len(p_obj)
+ 
+     if is_classif and n_classes_ <= 2:
+-        model.coef_ = coefs[np.newaxis, :n_features]
++        # For binary classification, ensure coef_ is 2D with shape (1, n_features)
++        model.coef_ = coefs[:n_features].reshape(1, -1)
+         if isinstance(datafit, QuadraticSVC):
+             if is_sparse:
+                 primal_coef = ((yXT).multiply(model.coef_[0, :])).T
+             else:
+                 primal_coef = (yXT * model.coef_[0, :]).T
+             primal_coef = primal_coef.sum(axis=0)
+-            model.coef_ = np.array(primal_coef).reshape(1, -1)
++            model.coef_ = primal_coef.reshape(1, -1)
+             model.dual_coef_ = coefs[np.newaxis, :]
+     return model
+ 
+@@ -188,6 +197,12 @@ class GeneralizedLinearEstimator(LinearModel):
+         Number of subproblems solved to reach the specified tolerance.
+     """
+ 
++    _parameter_constraints: dict = {
++        "datafit": [None, "object"],
++        "penalty": [None, "object"],
++        "solver": [None, "object"],
++    }
++
+     def __init__(self, datafit=None, penalty=None, solver=None):
+         super(GeneralizedLinearEstimator, self).__init__()
+         self.penalty = penalty
+@@ -202,12 +217,76 @@ class GeneralizedLinearEstimator(LinearModel):
+         repr : str
+             String representation.
+         """
++        penalty_name = self.penalty.__class__.__name__ if self.penalty else "None"
++        datafit_name = self.datafit.__class__.__name__ if self.datafit else "None"
++
++        if self.penalty and hasattr(self.penalty, 'alpha'):
++            penalty_alpha = self.penalty.alpha
++        else:
++            penalty_alpha = None
++
+         return (
+             'GeneralizedLinearEstimator(datafit=%s, penalty=%s, alpha=%s)'
+-            % (self.datafit.__class__.__name__, self.penalty.__class__.__name__,
+-               self.penalty.alpha))
++            % (datafit_name, penalty_name, penalty_alpha))
+ 
+-    def fit(self, X, y):
++    def __deepcopy__(self, memo):
++        """Create a deep copy of the estimator.
++
++        This is needed for GridSearchCV compatibility.
++
++        Parameters
++        ----------
++        memo : dict
++            Dictionary for memoization.
++
++        Returns
++        -------
++        estimator : GeneralizedLinearEstimator
++            Deep copy of self.
++        """
++        import copy
++
++        # Create a new instance of the class
++        result = self.__class__()
++
++        # Memorize the instance to handle circular references
++        memo[id(self)] = result
++
++        # Copy the attributes deeply
++        for key, val in self.__dict__.items():
++            # Skip non-picklable attributes that should be recreated
++            if key == 'solver' and val is not None:
++                # Create a new solver instance
++                solver_class = val.__class__
++                new_solver = solver_class()
++                # Copy solver attributes
++                for solver_key, solver_val in vars(val).items():
++                    if not solver_key.startswith('_'):
++                        setattr(new_solver, solver_key, copy.deepcopy(solver_val, memo))
++                setattr(result, key, new_solver)
++            elif key == 'datafit' and val is not None:
++                # Create a new datafit instance
++                datafit_class = val.__class__
++                new_datafit = datafit_class()
++                # Copy datafit attributes
++                if hasattr(val, 'params_to_dict'):
++                    params = val.params_to_dict()
++                    for param_key, param_val in params.items():
++                        setattr(new_datafit, param_key, copy.deepcopy(param_val, memo))
++                setattr(result, key, new_datafit)
++            elif key == 'penalty' and val is not None:
++                # Create a new penalty instance
++                penalty_class = val.__class__
++                new_penalty = penalty_class(
++                    **copy.deepcopy(val.params_to_dict(), memo) if hasattr(val, 'params_to_dict') else {})
++                setattr(result, key, new_penalty)
++            else:
++                # For all other attributes, perform normal deep copy
++                setattr(result, key, copy.deepcopy(val, memo))
++
++        return result
++
++    def fit(self, X, y, sample_weight=None):
+         """Fit estimator.
+ 
+         Parameters
+@@ -218,6 +297,9 @@ class GeneralizedLinearEstimator(LinearModel):
+         y : array, shape (n_samples,) or (n_samples, n_tasks)
+             Target array.
+ 
++        sample_weight : array, shape (n_samples,), optional
++            Sample weights. Only used if the datafit supports it.
++
+         Returns
+         -------
+         alphas : array, shape (n_alphas,)
+@@ -240,9 +322,17 @@ class GeneralizedLinearEstimator(LinearModel):
+                 "`Cox` datafit"
+             )
+ 
+-        self.penalty = self.penalty if self.penalty else L1(1.)
+-        self.datafit = self.datafit if self.datafit else Quadratic()
+-        self.solver = self.solver if self.solver else AndersonCD()
++        # Use original objects, don't create copies or replace them
++        if self.penalty is None:
++            self.penalty = L1(1.)
++        if self.datafit is None:
++            self.datafit = Quadratic()
++        if self.solver is None:
++            self.solver = AndersonCD()
++
++        # Set sample_weight if supported by datafit
++        if sample_weight is not None and hasattr(self.datafit, 'set_sample_weight'):
++            self.datafit.set_sample_weight(sample_weight)
+ 
+         return _glm_fit(X, y, self, self.datafit, self.penalty, self.solver)
+ 
+@@ -269,31 +359,151 @@ class GeneralizedLinearEstimator(LinearModel):
+         else:
+             return self._decision_function(X)
+ 
+-    def get_params(self, deep=False):
++    def get_params(self, deep=True):
+         """Get parameters of the estimators including the datafit's and penalty's.
+ 
+         Parameters
+         ----------
+-        deep : bool
+-            Whether or not return the parameters for contained subobjects estimators.
++        deep : bool, default=True
++            If True, will return the parameters for this estimator and
++            contained subobjects that are estimators.
+ 
+         Returns
+         -------
+         params : dict
+-            The parameters of the estimator.
++            Parameter names mapped to their values.
+         """
+-        params = super().get_params(deep)
+-        filtered_types = (float, int, str, np.ndarray)
+-        penalty_params = [('penalty__', p, getattr(self.penalty, p)) for p in
+-                          dir(self.penalty) if p[0] != "_" and
+-                          type(getattr(self.penalty, p)) in filtered_types]
+-        datafit_params = [('datafit__', p, getattr(self.datafit, p)) for p in
+-                          dir(self.datafit) if p[0] != "_" and
+-                          type(getattr(self.datafit, p)) in filtered_types]
+-        for p_prefix, p_key, p_val in penalty_params + datafit_params:
+-            params[p_prefix + p_key] = p_val
++        # Get basic parameters
++        params = super().get_params(deep=deep)
++
++        # Don't attempt to get nested parameters automatically
++        # This prevents breaking existing functionality
++        if deep:
++            # Manually handle datafit parameters
++            if self.datafit is not None:
++                if hasattr(self.datafit, 'params_to_dict'):
++                    for key, value in self.datafit.params_to_dict().items():
++                        params[f'datafit__{key}'] = value
++
++            # Manually handle penalty parameters
++            if self.penalty is not None:
++                if hasattr(self.penalty, 'params_to_dict'):
++                    for key, value in self.penalty.params_to_dict().items():
++                        params[f'penalty__{key}'] = value
++
++            # Manually handle solver parameters
++            if self.solver is not None:
++                # Get all public attributes from solver
++                for key, value in vars(self.solver).items():
++                    if not key.startswith('_'):
++                        params[f'solver__{key}'] = value
++
+         return params
+ 
++    def set_params(self, **params):
++        """Set the parameters of this estimator.
++
++        The method works on simple estimators as well as on nested objects
++        (such as pipelines). The latter have parameters of the form
++        ``<component>__<parameter>`` so that it's possible to update each
++        component of a nested object.
++
++        Parameters
++        ----------
++        **params : dict
++            Estimator parameters.
++
++        Returns
++        -------
++        self : estimator instance
++            Estimator instance.
++        """
++        if not params:
++            return self
++
++        valid_params = self.get_params(deep=True)
++        nested_params = {}
++        for key, value in params.items():
++            if key not in valid_params:
++                if '__' in key:
++                    # Extract the component name from the parameter
++                    component = key.split('__')[0]
++                    if component in ('datafit', 'penalty', 'solver'):
++                        # Group parameters by component
++                        if component not in nested_params:
++                            nested_params[component] = {}
++                        nested_params[component][key.split('__', 1)[1]] = value
++                    else:
++                        raise ValueError(f"Invalid parameter: {key}")
++                else:
++                    raise ValueError(f"Invalid parameter: {key}")
++            else:
++                if '__' not in key:
++                    # Direct parameter of self
++                    setattr(self, key, value)
++
++        # Handle nested parameters - direct attribute access
++        for component, component_params in nested_params.items():
++            if component == 'datafit':
++                for param, val in component_params.items():
++                    setattr(self.datafit, param, val)
++            elif component == 'penalty':
++                for param, val in component_params.items():
++                    setattr(self.penalty, param, val)
++            elif component == 'solver':
++                for param, val in component_params.items():
++                    setattr(self.solver, param, val)
++
++        return self
++
++    def _decision_function(self, X):
++        """Compute the decision function of X.
++
++        This method handles several cases based on the shape of coef_:
++
++        1. Single-output regression: coef_ shape (n_features,)
++        2. Binary classifiers: coef_ shape (1, n_features)
++        3. Multi-task regression: coef_ shape (n_features, n_tasks)
++        4. Multiclass classifiers: coef_ shape (n_classes, n_features)
++
++        Parameters
++        ----------
++        X : array-like, shape (n_samples, n_features)
++            Samples.
++
++        Returns
++        -------
++        array, shape (n_samples,) or (n_samples, n_tasks) or (n_samples, n_classes)
++            The decision function of the samples.
++        """
++        check_is_fitted(self)
++        X = check_array(X)
++        coef = self.coef_
++
++        # 1. Single-output regression  (w,)
++        if coef.ndim == 1:
++            return X @ coef + self.intercept_
++
++        # 2. Binary classifiers stored as (1, n_features)
++        if coef.shape[0] == 1:
++            return X @ coef[0] + self.intercept_
++
++        # 3. Multi-task regression OR transposed coef  (n_features, n_tasks)
++        #    - X has n_features columns, so this matrix product is valid
++        if coef.shape[0] == X.shape[1]:
++            # intercept_ is either scalar or (n_tasks,) → broadcasting works
++            return X @ coef + self.intercept_
++
++        # 4. Multiclass classifiers  (n_classes, n_features)
++        if isinstance(self.datafit, (Logistic, QuadraticSVC)):
++            if not hasattr(self, "classes_"):
++                raise AttributeError("Estimator is not fitted yet; 'classes_' missing.")
++            if coef.shape[0] == len(self.classes_):
++                return X @ coef.T + self.intercept_
++
++        # 5. Anything else is unexpected
++        raise ValueError(f"Unexpected shape for coef_: {coef.shape}")
++
+ 
+ class Lasso(RegressorMixin, LinearModel):
+     r"""Lasso estimator based on Celer solver and primal extrapolation.
+diff --git a/skglm/penalties/separable.py b/skglm/penalties/separable.py
+index c7d8d0b..85058c9 100644
+--- a/skglm/penalties/separable.py
++++ b/skglm/penalties/separable.py
+@@ -747,3 +747,23 @@ class L2(BasePenalty):
+     def gradient(self, w):
+         """Compute the gradient of the L2 penalty."""
+         return self.alpha * w
++
++    def prox_1d(self, value, stepsize, j):
++        """Compute the proximal operator of the L2 penalty."""
++        return value / (1 + self.alpha * stepsize)
++
++    def subdiff_distance(self, w, grad, ws):
++        """Compute distance of negative gradient to the subdifferential at w."""
++        subdiff_dist = np.zeros_like(grad)
++        for idx, j in enumerate(ws):
++            # For L2 penalty, the subdifferential is a singleton
++            subdiff_dist[idx] = np.abs(grad[idx] + self.alpha * w[j])
++        return subdiff_dist
++
++    def is_penalized(self, n_features):
++        """Return a binary mask with the penalized features."""
++        return np.ones(n_features, dtype=np.bool_)
++
++    def generalized_support(self, w):
++        """Return a mask with non-zero coefficients."""
++        return w != 0
+diff --git a/skglm/solvers/base.py b/skglm/solvers/base.py
+index a550eaa..98de477 100644
+--- a/skglm/solvers/base.py
++++ b/skglm/solvers/base.py
+@@ -116,7 +116,12 @@ class BaseSolver(ABC):
+                 "This will raise an error starting skglm v0.6 onwards."
+             )
+         elif datafit is not None:
+-            datafit = compiled_clone(datafit, to_float32=X.dtype == np.float32)
++            # Create a clone of the datafit to ensure all methods are preserved
++            datafit_clone = datafit.__class__()
++            for name, value in vars(datafit).items():
++                if not name.startswith('_'):
++                    setattr(datafit_clone, name, value)
++            datafit = compiled_clone(datafit_clone, to_float32=X.dtype == np.float32)
+ 
+         if "jitclass" in str(type(penalty)):
+             warnings.warn(
+@@ -125,7 +130,12 @@ class BaseSolver(ABC):
+                 "This will raise an error starting skglm v0.6 onwards."
+             )
+         elif penalty is not None:
+-            penalty = compiled_clone(penalty)
++            # Create a clone of the penalty to ensure all methods are preserved
++            penalty_clone = penalty.__class__()
++            for name, value in vars(penalty).items():
++                if not name.startswith('_'):
++                    setattr(penalty_clone, name, value)
++            penalty = compiled_clone(penalty_clone)
+             # TODO add support for bool spec in compiled_clone
+             # currently, doing so break the code
+             # penalty = compiled_clone(penalty, to_float32=X.dtype == np.float32)
+diff --git a/skglm/solvers/group_bcd.py b/skglm/solvers/group_bcd.py
+index c7b515d..5d9f4c3 100644
+--- a/skglm/solvers/group_bcd.py
++++ b/skglm/solvers/group_bcd.py
+@@ -60,7 +60,10 @@ class GroupBCD(BaseSolver):
+         n_samples, n_features = X.shape
+         n_groups = len(penalty.grp_ptr) - 1
+ 
+-        w = np.zeros(n_features + self.fit_intercept) if w_init is None else w_init
++        if w_init is None:
++            w = np.zeros(n_features + self.fit_intercept, dtype=X.dtype)
++        else:
++            w = np.ascontiguousarray(w_init, dtype=X.dtype)
+         Xw = np.zeros(n_samples) if w_init is None else Xw_init
+ 
+         if len(w) != n_features + self.fit_intercept:
+diff --git a/skglm/utils/jit_compilation.py b/skglm/utils/jit_compilation.py
+index cf63e35..3c468f6 100644
+--- a/skglm/utils/jit_compilation.py
++++ b/skglm/utils/jit_compilation.py
+@@ -3,6 +3,7 @@ from functools import lru_cache
+ import numba
+ from numba import float32, float64
+ from numba.experimental import jitclass
++from numba.core.types.npytypes import Array as NumbaArray
+ 
+ 
+ def spec_to_float32(spec):
+@@ -56,10 +57,21 @@ def jit_cached_compile(klass, spec, to_float32=False):
+     Instance of Datafit or penalty
+         Return a jitclass.
+     """
++    # Create a new class without inheriting from the original
++    class CompiledClass:
++        pass
++
++    # Copy over all methods and attributes from the original class
++    for name, value in klass.__dict__.items():
++        # Skip __slots__ and __slotnames__ but keep other special methods
++        if name not in ['__slots__', '__slotnames__']:
++            setattr(CompiledClass, name, value)
++
++    # Convert spec to float32 if requested
+     if to_float32:
+         spec = spec_to_float32(spec)
+ 
+-    return jitclass(spec)(klass)
++    return jitclass(spec)(CompiledClass)
+ 
+ 
+ def compiled_clone(instance, to_float32=False):

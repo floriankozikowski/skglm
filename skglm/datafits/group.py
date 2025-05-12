@@ -3,7 +3,7 @@ from numpy.linalg import norm
 from numba import int32, float64
 
 from skglm.datafits.base import BaseDatafit
-from skglm.datafits.single_task import Logistic
+from skglm.datafits.single_task import Logistic, sigmoid
 from skglm.utils.sparse_ops import spectral_norm, sparse_columns_slice
 
 
@@ -38,6 +38,16 @@ class QuadraticGroup(BaseDatafit):
     def params_to_dict(self):
         return dict(grp_ptr=self.grp_ptr,
                     grp_indices=self.grp_indices)
+
+    def initialize(self, X, y):
+        """Initialize the datafit attributes."""
+        # For quadratic group datafit, we don't need to pre-compute anything
+        pass
+
+    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
+        """Initialize the datafit attributes in sparse dataset case."""
+        # For quadratic group datafit, we don't need to pre-compute anything
+        pass
 
     def get_lipschitz(self, X, y):
         grp_ptr, grp_indices = self.grp_ptr, self.grp_indices
@@ -150,6 +160,10 @@ class LogisticGroup(Logistic):
             lipschitz[g] = norm(X_g, ord=2) ** 2 / (4 * len(y))
 
         self.lipschitz = lipschitz
+
+    def raw_grad(self, y, Xw):
+        """Compute gradient of datafit w.r.t ``Xw``."""
+        return -y * sigmoid(-y * Xw) / len(y)
 
     def gradient_g(self, X, y, w, Xw, g):
         grp_ptr, grp_indices = self.grp_ptr, self.grp_indices

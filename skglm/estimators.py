@@ -71,7 +71,6 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
         raise ValueError("X and y have inconsistent dimensions (%d != %d)"
                          % (n_samples, y.shape[0]))
 
-    # if not model.warm_start or not hasattr(model, "coef_"):
     if not solver.warm_start or not hasattr(model, "coef_"):
         model.coef_ = None
 
@@ -102,7 +101,6 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
 
     n_samples, n_features = X_.shape
 
-    # if model.warm_start and hasattr(model, 'coef_') and model.coef_ is not None:
     if solver.warm_start and hasattr(model, 'coef_') and model.coef_ is not None:
         if isinstance(datafit, QuadraticSVC):
             w = model.dual_coef_[0, :].copy()
@@ -130,7 +128,17 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
                 "expected %i, got %i." % (X_.shape[1], len(penalty.weights)))
 
     coefs, p_obj, kkt = solver.solve(X_, y, datafit, penalty, w, Xw)
-    model.coef_, model.stop_crit_ = coefs[:n_features], kkt
+
+    # Handle coefficients based on datafit type
+    if isinstance(datafit, QuadraticGroup):
+        # For group datafit, ensure coefficients are properly shaped
+        model.coef_ = coefs[:n_features].reshape(1, -1)
+
+    else:
+        model.coef_ = coefs[:n_features]
+
+    model.stop_crit_ = kkt
+
     if y.ndim == 1:
         model.intercept_ = coefs[-1] if fit_intercept else 0.
     else:
@@ -140,14 +148,15 @@ def _glm_fit(X, y, model, datafit, penalty, solver):
     model.n_iter_ = len(p_obj)
 
     if is_classif and n_classes_ <= 2:
-        model.coef_ = coefs[np.newaxis, :n_features]
+        # For binary classification, ensure coef_ is 2D with shape (1, n_features)
+        model.coef_ = coefs[:n_features].reshape(1, -1)
         if isinstance(datafit, QuadraticSVC):
             if is_sparse:
                 primal_coef = ((yXT).multiply(model.coef_[0, :])).T
             else:
                 primal_coef = (yXT * model.coef_[0, :]).T
             primal_coef = primal_coef.sum(axis=0)
-            model.coef_ = np.array(primal_coef).reshape(1, -1)
+            model.coef_ = primal_coef.reshape(1, -1)
             model.dual_coef_ = coefs[np.newaxis, :]
     return model
 
@@ -188,6 +197,12 @@ class GeneralizedLinearEstimator(LinearModel):
         Number of subproblems solved to reach the specified tolerance.
     """
 
+    _parameter_constraints: dict = {
+        "datafit": [None, "object"],
+        "penalty": [None, "object"],
+        "solver": [None, "object"],
+    }
+
     def __init__(self, datafit=None, penalty=None, solver=None):
         super(GeneralizedLinearEstimator, self).__init__()
         self.penalty = penalty
@@ -202,12 +217,76 @@ class GeneralizedLinearEstimator(LinearModel):
         repr : str
             String representation.
         """
+        penalty_name = self.penalty.__class__.__name__ if self.penalty else "None"
+        datafit_name = self.datafit.__class__.__name__ if self.datafit else "None"
+
+        if self.penalty and hasattr(self.penalty, 'alpha'):
+            penalty_alpha = self.penalty.alpha
+        else:
+            penalty_alpha = None
+
         return (
             'GeneralizedLinearEstimator(datafit=%s, penalty=%s, alpha=%s)'
-            % (self.datafit.__class__.__name__, self.penalty.__class__.__name__,
-               self.penalty.alpha))
+            % (datafit_name, penalty_name, penalty_alpha))
 
-    def fit(self, X, y):
+    def __deepcopy__(self, memo):
+        """Create a deep copy of the estimator.
+
+        This is needed for GridSearchCV compatibility.
+
+        Parameters
+        ----------
+        memo : dict
+            Dictionary for memoization.
+
+        Returns
+        -------
+        estimator : GeneralizedLinearEstimator
+            Deep copy of self.
+        """
+        import copy
+
+        # Create a new instance of the class
+        result = self.__class__()
+
+        # Memorize the instance to handle circular references
+        memo[id(self)] = result
+
+        # Copy the attributes deeply
+        for key, val in self.__dict__.items():
+            # Skip non-picklable attributes that should be recreated
+            if key == 'solver' and val is not None:
+                # Create a new solver instance
+                solver_class = val.__class__
+                new_solver = solver_class()
+                # Copy solver attributes
+                for solver_key, solver_val in vars(val).items():
+                    if not solver_key.startswith('_'):
+                        setattr(new_solver, solver_key, copy.deepcopy(solver_val, memo))
+                setattr(result, key, new_solver)
+            elif key == 'datafit' and val is not None:
+                # Create a new datafit instance
+                datafit_class = val.__class__
+                new_datafit = datafit_class()
+                # Copy datafit attributes
+                if hasattr(val, 'params_to_dict'):
+                    params = val.params_to_dict()
+                    for param_key, param_val in params.items():
+                        setattr(new_datafit, param_key, copy.deepcopy(param_val, memo))
+                setattr(result, key, new_datafit)
+            elif key == 'penalty' and val is not None:
+                # Create a new penalty instance
+                penalty_class = val.__class__
+                new_penalty = penalty_class(
+                    **copy.deepcopy(val.params_to_dict(), memo) if hasattr(val, 'params_to_dict') else {})
+                setattr(result, key, new_penalty)
+            else:
+                # For all other attributes, perform normal deep copy
+                setattr(result, key, copy.deepcopy(val, memo))
+
+        return result
+
+    def fit(self, X, y, sample_weight=None):
         """Fit estimator.
 
         Parameters
@@ -217,6 +296,9 @@ class GeneralizedLinearEstimator(LinearModel):
 
         y : array, shape (n_samples,) or (n_samples, n_tasks)
             Target array.
+
+        sample_weight : array, shape (n_samples,), optional
+            Sample weights. Only used if the datafit supports it.
 
         Returns
         -------
@@ -240,9 +322,17 @@ class GeneralizedLinearEstimator(LinearModel):
                 "`Cox` datafit"
             )
 
-        self.penalty = self.penalty if self.penalty else L1(1.)
-        self.datafit = self.datafit if self.datafit else Quadratic()
-        self.solver = self.solver if self.solver else AndersonCD()
+        # Use original objects, don't create copies or replace them
+        if self.penalty is None:
+            self.penalty = L1(1.)
+        if self.datafit is None:
+            self.datafit = Quadratic()
+        if self.solver is None:
+            self.solver = AndersonCD()
+
+        # Set sample_weight if supported by datafit
+        if sample_weight is not None and hasattr(self.datafit, 'set_sample_weight'):
+            self.datafit.set_sample_weight(sample_weight)
 
         return _glm_fit(X, y, self, self.datafit, self.penalty, self.solver)
 
@@ -269,30 +359,150 @@ class GeneralizedLinearEstimator(LinearModel):
         else:
             return self._decision_function(X)
 
-    def get_params(self, deep=False):
+    def get_params(self, deep=True):
         """Get parameters of the estimators including the datafit's and penalty's.
 
         Parameters
         ----------
-        deep : bool
-            Whether or not return the parameters for contained subobjects estimators.
+        deep : bool, default=True
+            If True, will return the parameters for this estimator and
+            contained subobjects that are estimators.
 
         Returns
         -------
         params : dict
-            The parameters of the estimator.
+            Parameter names mapped to their values.
         """
-        params = super().get_params(deep)
-        filtered_types = (float, int, str, np.ndarray)
-        penalty_params = [('penalty__', p, getattr(self.penalty, p)) for p in
-                          dir(self.penalty) if p[0] != "_" and
-                          type(getattr(self.penalty, p)) in filtered_types]
-        datafit_params = [('datafit__', p, getattr(self.datafit, p)) for p in
-                          dir(self.datafit) if p[0] != "_" and
-                          type(getattr(self.datafit, p)) in filtered_types]
-        for p_prefix, p_key, p_val in penalty_params + datafit_params:
-            params[p_prefix + p_key] = p_val
+        # Get basic parameters
+        params = super().get_params(deep=deep)
+
+        # Don't attempt to get nested parameters automatically
+        # This prevents breaking existing functionality
+        if deep:
+            # Manually handle datafit parameters
+            if self.datafit is not None:
+                if hasattr(self.datafit, 'params_to_dict'):
+                    for key, value in self.datafit.params_to_dict().items():
+                        params[f'datafit__{key}'] = value
+
+            # Manually handle penalty parameters
+            if self.penalty is not None:
+                if hasattr(self.penalty, 'params_to_dict'):
+                    for key, value in self.penalty.params_to_dict().items():
+                        params[f'penalty__{key}'] = value
+
+            # Manually handle solver parameters
+            if self.solver is not None:
+                # Get all public attributes from solver
+                for key, value in vars(self.solver).items():
+                    if not key.startswith('_'):
+                        params[f'solver__{key}'] = value
+
         return params
+
+    def set_params(self, **params):
+        """Set the parameters of this estimator.
+
+        The method works on simple estimators as well as on nested objects
+        (such as pipelines). The latter have parameters of the form
+        ``<component>__<parameter>`` so that it's possible to update each
+        component of a nested object.
+
+        Parameters
+        ----------
+        **params : dict
+            Estimator parameters.
+
+        Returns
+        -------
+        self : estimator instance
+            Estimator instance.
+        """
+        if not params:
+            return self
+
+        valid_params = self.get_params(deep=True)
+        nested_params = {}
+        for key, value in params.items():
+            if key not in valid_params:
+                if '__' in key:
+                    # Extract the component name from the parameter
+                    component = key.split('__')[0]
+                    if component in ('datafit', 'penalty', 'solver'):
+                        # Group parameters by component
+                        if component not in nested_params:
+                            nested_params[component] = {}
+                        nested_params[component][key.split('__', 1)[1]] = value
+                    else:
+                        raise ValueError(f"Invalid parameter: {key}")
+                else:
+                    raise ValueError(f"Invalid parameter: {key}")
+            else:
+                if '__' not in key:
+                    # Direct parameter of self
+                    setattr(self, key, value)
+
+        # Handle nested parameters - direct attribute access
+        for component, component_params in nested_params.items():
+            if component == 'datafit':
+                for param, val in component_params.items():
+                    setattr(self.datafit, param, val)
+            elif component == 'penalty':
+                for param, val in component_params.items():
+                    setattr(self.penalty, param, val)
+            elif component == 'solver':
+                for param, val in component_params.items():
+                    setattr(self.solver, param, val)
+
+        return self
+
+    def _decision_function(self, X):
+        """Compute the decision function of X.
+
+        This method handles several cases based on the shape of coef_:
+
+        1. Single-output regression: coef_ shape (n_features,)
+        2. Binary classifiers: coef_ shape (1, n_features)
+        3. Multi-task regression: coef_ shape (n_features, n_tasks)
+        4. Multiclass classifiers: coef_ shape (n_classes, n_features)
+
+        Parameters
+        ----------
+        X : array-like, shape (n_samples, n_features)
+            Samples.
+
+        Returns
+        -------
+        array, shape (n_samples,) or (n_samples, n_tasks) or (n_samples, n_classes)
+            The decision function of the samples.
+        """
+        check_is_fitted(self)
+        X = check_array(X)
+        coef = self.coef_
+
+        # 1. Single-output regression  (w,)
+        if coef.ndim == 1:
+            return X @ coef + self.intercept_
+
+        # 2. Binary classifiers stored as (1, n_features)
+        if coef.shape[0] == 1:
+            return X @ coef[0] + self.intercept_
+
+        # 3. Multi-task regression OR transposed coef  (n_features, n_tasks)
+        #    - X has n_features columns, so this matrix product is valid
+        if coef.shape[0] == X.shape[1]:
+            # intercept_ is either scalar or (n_tasks,) → broadcasting works
+            return X @ coef + self.intercept_
+
+        # 4. Multiclass classifiers  (n_classes, n_features)
+        if isinstance(self.datafit, (Logistic, QuadraticSVC)):
+            if not hasattr(self, "classes_"):
+                raise AttributeError("Estimator is not fitted yet; 'classes_' missing.")
+            if coef.shape[0] == len(self.classes_):
+                return X @ coef.T + self.intercept_
+
+        # 5. Anything else is unexpected
+        raise ValueError(f"Unexpected shape for coef_: {coef.shape}")
 
 
 class Lasso(RegressorMixin, LinearModel):

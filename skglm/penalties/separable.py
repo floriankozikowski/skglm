@@ -747,3 +747,23 @@ class L2(BasePenalty):
     def gradient(self, w):
         """Compute the gradient of the L2 penalty."""
         return self.alpha * w
+
+    def prox_1d(self, value, stepsize, j):
+        """Compute the proximal operator of the L2 penalty."""
+        return value / (1 + self.alpha * stepsize)
+
+    def subdiff_distance(self, w, grad, ws):
+        """Compute distance of negative gradient to the subdifferential at w."""
+        subdiff_dist = np.zeros_like(grad)
+        for idx, j in enumerate(ws):
+            # For L2 penalty, the subdifferential is a singleton
+            subdiff_dist[idx] = np.abs(grad[idx] + self.alpha * w[j])
+        return subdiff_dist
+
+    def is_penalized(self, n_features):
+        """Return a binary mask with the penalized features."""
+        return np.ones(n_features, dtype=np.bool_)
+
+    def generalized_support(self, w):
+        """Return a mask with non-zero coefficients."""
+        return w != 0

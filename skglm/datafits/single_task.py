@@ -27,7 +27,7 @@ class Quadratic(BaseDatafit):
     """
 
     def __init__(self):
-        pass
+        self.Xty = np.zeros(0, dtype=np.float64)
 
     def get_spec(self):
         spec = (
@@ -141,8 +141,11 @@ class WeightedQuadratic(BaseDatafit):
     This allows for faster computations.
     """
 
-    def __init__(self, sample_weights):
+    def __init__(self, sample_weights=None):
         self.sample_weights = sample_weights
+
+    def set_sample_weight(self, sample_weight):
+        self.sample_weights = sample_weight
 
     def get_spec(self):
         spec = (
@@ -155,6 +158,8 @@ class WeightedQuadratic(BaseDatafit):
         return {'sample_weights': self.sample_weights}
 
     def get_lipschitz(self, X, y):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling get_lipschitz.")
         n_features = X.shape[1]
         lipschitz = np.zeros(n_features, dtype=X.dtype)
         w_sum = self.sample_weights.sum()
@@ -165,6 +170,9 @@ class WeightedQuadratic(BaseDatafit):
         return lipschitz
 
     def get_lipschitz_sparse(self, X_data, X_indptr, X_indices, y):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling get_lipschitz_sparse.")
         n_features = len(X_indptr) - 1
         lipschitz = np.zeros(n_features, dtype=X_data.dtype)
         w_sum = self.sample_weights.sum()
@@ -179,9 +187,14 @@ class WeightedQuadratic(BaseDatafit):
         return lipschitz
 
     def initialize(self, X, y):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling initialize.")
         self.Xtwy = X.T @ (self.sample_weights * y)
 
     def initialize_sparse(self, X_data, X_indptr, X_indices, y):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling initialize_sparse.")
         n_features = len(X_indptr) - 1
         self.Xty = np.zeros(n_features, dtype=X_data.dtype)
 
@@ -193,37 +206,60 @@ class WeightedQuadratic(BaseDatafit):
             self.Xty[j] = xty
 
     def get_global_lipschitz(self, X, y):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling get_global_lipschitz.")
         w_sum = self.sample_weights.sum()
         return norm(X.T @ np.sqrt(self.sample_weights), ord=2) ** 2 / w_sum
 
     def get_global_lipschitz_sparse(self, X_data, X_indptr, X_indices, y):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling get_global_lipschitz_sparse.")
         return spectral_norm(
             X_data * np.sqrt(self.sample_weights[X_indices]),
             X_indptr, X_indices, len(y)) ** 2 / self.sample_weights.sum()
 
     def value(self, y, w, Xw):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling value.")
         w_sum = self.sample_weights.sum()
         return np.sum(self.sample_weights * (y - Xw) ** 2) / (2 * w_sum)
 
     def gradient_scalar(self, X, y, w, Xw, j):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling gradient_scalar.")
         return (X[:, j] @ (self.sample_weights * (Xw - y))) / self.sample_weights.sum()
 
     def gradient_scalar_sparse(self, X_data, X_indptr, X_indices, y, Xw, j):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling gradient_scalar_sparse.")
         XjTXw = 0.
         for i in range(X_indptr[j], X_indptr[j + 1]):
             XjTXw += X_data[i] * self.sample_weights[X_indices[i]] * Xw[X_indices[i]]
         return (XjTXw - self.Xty[j]) / self.sample_weights.sum()
 
     def gradient(self, X, y, Xw):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling gradient.")
         return X.T @ (self.sample_weights * (Xw - y)) / self.sample_weights.sum()
 
     def raw_grad(self, y, Xw):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling raw_grad.")
         return (self.sample_weights * (Xw - y)) / self.sample_weights.sum()
 
     def raw_hessian(self, y, Xw):
+        if self.sample_weights is None:
+            raise ValueError("sample_weights must be set before calling raw_hessian.")
         return self.sample_weights / self.sample_weights.sum()
 
     def full_grad_sparse(self, X_data, X_indptr, X_indices, y, Xw):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling full_grad_sparse.")
         n_features = X_indptr.shape[0] - 1
         grad = np.zeros(n_features, dtype=Xw.dtype)
 
@@ -236,6 +272,9 @@ class WeightedQuadratic(BaseDatafit):
         return grad
 
     def intercept_update_step(self, y, Xw):
+        if self.sample_weights is None:
+            raise ValueError(
+                "sample_weights must be set before calling intercept_update_step.")
         return np.sum(self.sample_weights * (Xw - y)) / self.sample_weights.sum()
 
 
@@ -298,19 +337,20 @@ class Logistic(BaseDatafit):
         pass
 
     def get_spec(self):
-        pass
+        return ()
 
     def params_to_dict(self):
         return dict()
 
-    def raw_grad(self, y, Xw):
-        """Compute gradient of datafit w.r.t ``Xw``."""
-        return -y / (1 + np.exp(y * Xw)) / len(y)
+    def initialize(self, X, y):
+        """Initialize the datafit attributes."""
+        # For logistic regression, we don't need to pre-compute anything
+        pass
 
-    def raw_hessian(self, y, Xw):
-        """Compute Hessian of datafit w.r.t ``Xw``."""
-        exp_minus_yXw = np.exp(-y * Xw)
-        return exp_minus_yXw / (1 + exp_minus_yXw) ** 2 / len(y)
+    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
+        """Initialize the datafit attributes in sparse dataset case."""
+        # For logistic regression, we don't need to pre-compute anything
+        pass
 
     def get_lipschitz(self, X, y):
         return (X ** 2).sum(axis=0) / (4 * len(y))
@@ -485,6 +525,16 @@ class Huber(BaseDatafit):
 
     def params_to_dict(self):
         return dict(delta=self.delta)
+
+    def initialize(self, X, y):
+        """Initialize the datafit attributes."""
+        # For Huber datafit, we don't need to pre-compute anything
+        pass
+
+    def initialize_sparse(self, X_data, X_indptr, X_indices, y):
+        """Initialize the datafit attributes in sparse dataset case."""
+        # For Huber datafit, we don't need to pre-compute anything
+        pass
 
     def get_lipschitz(self, X, y):
         n_features = X.shape[1]
